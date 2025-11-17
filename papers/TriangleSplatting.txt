@@ -1,0 +1,1249 @@
+Triangle Splatting
+for Real-Time Radiance Field Rendering
+
+arXiv:2505.19175v1 [cs.CV] 25 May 2025
+
+Jan Held∗ 1,2 Renaud Vandeghen∗ 1 Adrien Deliege 1 Abdullah Hamdi 3
+Silvio Giancola 2 Anthony Cioppa 1 Andrea Vedaldi 3 Bernard Ghanem 2
+Andrea Tagliasacchi 4,5,6 Marc Van Droogenbroeck 1
+University of Liège 1 KAUST 2 University of Oxford3
+Simon Fraser University4 University of Toronto5 Google DeepMind6
+∗
+
+Equal contribution
+
+Figure 1: We propose a new representation for differentiable rendering based on the most classical of 3D
+primitives: the triangle. We show how a triangle soup (i.e. unstructured, disconnected triangles) can be optimized
+effectively, generating state-of-the-art novel view synthesis images while being immediately compatible with
+classical rendering pipelines. The figure shows the final rendered output (left), a visualization of soft blending
+(middle), and the rendering of a random subset of triangles to highlight their structure (right).
+
+Abstract
+The field of computer graphics was revolutionized by models such as Neural Radiance Fields and 3D Gaussian Splatting, displacing triangles as the dominant
+representation for photogrammetry. In this paper, we argue for a triangle comeback. We develop a differentiable renderer that directly optimizes triangles via
+end-to-end gradients. We achieve this by rendering each triangle as differentiable
+splats, combining the efficiency of triangles with the adaptive density of representations based on independent primitives. Compared to popular 2D and 3D Gaussian
+Splatting methods, our approach achieves higher visual fidelity, faster convergence,
+and increased rendering throughput. On the Mip-NeRF360 dataset, our method
+outperforms concurrent non-volumetric primitives in visual fidelity and achieves
+higher perceptual quality than the state-of-the-art Zip-NeRF on indoor scenes.
+Triangles are simple, compatible with standard graphics stacks and GPU hardware,
+and highly efficient: for the Garden scene, we achieve over 2,400 FPS at 1280×720
+resolution using an off-the-shelf mesh renderer. These results highlight the efficiency and effectiveness of triangle-based representations for high-quality novel
+view synthesis. Triangles bring us closer to mesh-based optimization by combining
+classical computer graphics with modern differentiable rendering frameworks. The
+project page is https://trianglesplatting.github.io/
+
+Figure 2: Byproduct of the triangle-based representation – Triangle Splatting unifies differentiable scene
+optimization with traditional graphics pipelines. The optimized triangle soup is compatible with any mesh-based
+renderer, enabling seamless integration into traditional graphics pipelines. In a game engine, we render at 2,400+
+FPS at 1280×720 resolution on an RTX4090 (left) and 300+ FPS on a consumer laptop (right).
+
+1
+
+Introduction
+
+One of the enduring challenges in 3D vision and graphics is identifying a truly universal primitive for
+representing 3D content in a differentiable form, enabling gradient-based optimization of geometry
+and appearance. Despite extensive research, no single data structure has emerged as a silver bullet.
+Instead, researchers have explored a variety of approaches, including neural fields [31], explicit
+grids [10], hash tables [32], convex primitives [8, 14], and anisotropic Gaussians [21], among
+others. Conversely, in conventional graphics pipelines, the triangle remains the undisputed workhorse.
+Game engines and other real-time systems primarily rely on triangles, as GPUs feature dedicated
+hardware pipelines for ultra-efficient triangle processing and rendering. Although other primitives
+exist (e.g. , quads in 2D or tetrahedra in 3D), they can always be subdivided into triangles. Moreover,
+surface reconstruction in 3D vision and graphics predominantly relies on triangle meshes to represent
+continuous, watertight geometry in an efficient, renderable form [20].
+Despite their ubiquity, triangles are difficult to optimize in differentiable frameworks due to their
+discrete nature. Early attempts at differentiable optimization softened the non-differentiable occlusion
+at polygon edges, enabling gradients from image loss to flow into geometry and appearance parameters [19, 26]. However, these methods require a predefined mesh template, making them unsuitable
+when the scene’s topology is unknown a priori. As a result, they struggle to capture fine geometric
+details and adapt to novel structures. To address these challenges, researchers adopted volumetric
+primitives, such as anisotropic 3D Gaussians in 3DGS [21], which can be optimized for high-quality
+novel view synthesis. However, the unbounded support of Gaussians makes it difficult to define the
+“surface” of the representation, and their inherent smoothness hinders accurate modeling of sharp
+details. Surface structures can be partially restored using 2D Gaussian Splatting [15] or 3D convex
+polytopes [14]. Yet, a pivotal question remains: can triangles themselves be optimized directly?
+Learning to optimize a “triangle soup” (i.e. unstructured, disconnected triangles) via gradient-based
+methods could represent a major step towards the goal of template-free mesh optimization. Such an
+approach leverages decades of GPU-accelerated triangle processing and the mature mesh processing
+literature, making it easier to integrate these techniques within differentiable rendering pipelines.
+In this work, we introduce Triangle Splatting, a real-time differentiable renderer that splats a soup
+of triangles into screen space while enabling end-to-end gradient-based optimization. Triangle
+Splatting merges the adaptability of Gaussians with the efficiency of triangle primitives, surpassing
+3D Gaussian Splatting (3DGS), 2D Gaussian Splatting (2DGS), and 3D Convex Splatting (3DCS)
+in visual fidelity, training speed, and rendering throughput. The optimized triangle soup is directly
+compatible with any standard mesh-based renderer. As shown in Figure 2, our representation can
+be rendered in traditional game engines at over 2,400 FPS at 1280×720 resolution, demonstrating
+both high efficiency and seamless compatibility. To our knowledge, Triangle Splatting is the first
+splatting-based approach to directly optimize triangle primitives for novel-view synthesis and 3D
+reconstruction, delivering state-of-the-art results while bridging classical rendering pipelines with
+modern differentiable frameworks.
+Contributions. (i) We propose Triangle Splatting, a novel approach that directly optimizes unstructured triangles, bridging traditional computer graphics and radiance fields. (ii) We introduce a
+2
+
+differentiable window function for soft triangle boundaries, enabling effective gradient flow. (iii) We
+demonstrate qualitatively and quantitatively that Triangle Splatting outperforms concurrent methods
+in terms of visual quality and rendering speed, and achieves superior perceptual quality compared to
+the state-of-the-art Zip-NeRF on indoor scenes. (iv) The optimized triangles are directly compatible
+with standard mesh-based renderers, enabling seamless integration into traditional graphics pipelines.
+
+2
+
+Related work
+
+Neural radiance fields have become the de-facto standard for image-based 3D reconstruction [30]. A
+large body of work has since addressed NeRF’s slow training and rendering by introducing multiresolution grids or hybrid representations [5, 10, 24, 32, 37], or baking procedures for real-time
+playback [7, 13, 34, 35]. Improvements in robustness include anti-aliasing [1–3], handling unbounded
+scenes [2, 42], and few-shot generalization [4, 9, 17]. Despite their success, implicit fields still require
+costly volume integration at render time. Our Triangle Splatting sidesteps this by optimizing explicit
+triangles that are traced once per pixel, leading to comparable fidelity but orders-of-magnitude faster
+rendering. For example, our triangles render ten times faster than Instant-NGP [32], while matching
+its optimization speed and achieving significantly higher visual fidelity.
+Primitive-based differentiable rendering. Differentiable renderers back-propagate image loss to
+scene parameters, enabling end-to-end optimization of explicit primitives such as points [11, 19],
+voxels [10], meshes [19, 26, 27], and Gaussians [21]. 3D Gaussian Splatting [21] demonstrated that
+millions of anisotropic Gaussians can be fitted in minutes and rendered in real time. Follow-up work
+improved anti-aliasing [41], offered exact volumetric integration [29], or modeled dynamics [28, 43].
+Because Gaussians have infinite support and inherently smooth fall-off, they struggle with sharp
+creases and watertight surfaces; recent extensions therefore experiment with alternative kernels [16],
+learnable basis functions [6], or linear primitives [40]. Convex Splatting [14] replaced Gaussians
+with smooth convexes, capturing hard edges more faithfully, but at the cost of slow optimization
+time and larger memory footprints. Compared with Gaussian [15, 21] or Convex Splatting [14],
+which explored either volumetric (e.g. Gaussian, voxel) or solid (e.g. convex, tetrahedral) primitives,
+Triangle Splatting proposes surface primitives, aligning with the surface of solid objects most typically
+found in real-world scenes. In extensive experiments, we show that Triangle Splatting surpasses
+3DGS [21], 2DGS [15], and 3DCS [14] in visual quality and speed of rendering and optimization.
+
+3
+
+Method
+
+We address the problem of reconstructing a photorealistic 3D scene from multiple images. To this
+end, we propose a scene representation that enables efficient, differentiable rendering and can be
+directly optimized by minimizing a rendering loss. Similar to prior work, the scene is represented by
+a large collection of simple geometric primitives. However, where 3DGS used 3D Gaussians [21],
+3DCS used 3D convex hulls [14], and 2DGS used 2D Gaussians [15], we propose the simplest and
+most efficient primitive, triangles. First, section 3.1 explains how these triangles are rendered on an
+image. Then, section 3.2 describes how we adaptively prune and densify the triangle representation.
+Finally, section 3.3 describes how to optimize the triangles’ parameters to fit the input images.
+3.1
+
+Differentiable rasterization
+
+Our primitives are 3D triangles T3D , each defined by three vertices vi ∈ R3 , a color c, a smoothness
+parameter σ and an opacity o. The three vertices can move freely during optimization. To render a
+triangle, we first project each vertex vi to the image plane using a standard pinhole camera model.
+The projection involves the intrinsic camera matrix K and the camera pose (parameterized by rotation
+R and translation t): qi = K (Rvi + t), with qi ∈ R2 forming the projected triangle T2D in the
+2D image space. Instead of rendering the triangle as fully opaque, we weigh its influence smoothly,
+based on a window function I mapping pixels p to values in the [0, 1] range. As we discuss below,
+the choice of this function is of critical importance. Once the triangles are projected, the color of each
+image pixel p is computed by accumulating contributions from all overlapping triangles, in depth
+order, treating the value I(p) as opacity. The rendering equation is the same as the one used in prior
+works [14, 21], and refer the reader to [39] for its derivation.
+3
+
+Inside the shape
+
+Outside the shape
+
+æ = 1.0
+
+æ = 0.2
+
+æ = 0.01
+
+1.0
+
+1.0
+æ = 0.01
+æ = 0.1
+æ=1
+æ = 10
+æ = 100
+
+0.75
+
+Eq. (1) 0.5
+0.25
+
+0.8
+
+0.6
+
+0
+Inside the shape
+
+Outside the shape
+
+1.0
+
+0.4
+
+0.75
+
+Eq. (2) 0.5
+
+0.2
+
+0.25
+0
+¡(s)
+
+æ = 5.0
+
+0
+
+æ = 1.0
+
+æ = 0.01
+
+0.0
+
+Figure 3: Triangle window function (1D and 2D) – We visualize the window functions of prior works [8, 14]
+(bottom) vs. the one introduced in our paper (top) in both 1D (left) and 2D (right). We show how the window
+function changes as we vary the smoothness control parameter σ. As σ decreases, note that both can approximate
+the window function of a triangle. However, as σ increases, the support of (2) exceeds the footprint of the
+triangle, making it unsuitable for rasterization workloads. In the limit, (2) becomes globally supported, with a
+window value of 0.5 everywhere, causing every triangle to contribute to the color of every pixel in the image.
+A new window function. We first describe how the window function I is defined, which is one of
+our core contributions. We start by defining the signed distance field (SDF) ϕ of the 2D triangle in
+image space. This is given by:
+ϕ(p) =
+
+Li (p) = ni · p + di ,
+
+max Li (p),
+
+i∈{1,2,3}
+
+where ni are the unit normals of the triangle edges pointing outside the triangle, and di are offsets
+such that the triangle is given by the zero-level set of the function ϕ. The signed distance field ϕ thus
+takes positive values outside the triangle, negative values inside, and equals zero on its boundary.
+Let s ∈ R2 be the incenter of the projected triangle T2D (i.e. , the point within the triangle where the
+signed distance field is minimum). With this, we define our new window function I as:
+
+
+σ
+= 1 at the triangle incenter,
+ϕ(p)
+I(p) = ReLU
+(1)
+such that I(p) = 0 at the triangle boundary,
+
+ϕ(s)
+= 0 outside the triangle.
+Here, the parameter σ > 0 controls the smoothness of the window function. ϕ(p) is negative inside
+the triangle, and ϕ(s) is its smallest (most negative) value, so the ratio ϕ(p)/ϕ(s) is positive inside
+the triangle, equal to one at the incenter, and equal to zero at the boundary. This formulation has three
+important properties: (i) there is a point (the incenter) inside the triangle where the window function
+obtains the maximum value of one; (ii) the window function is zero at the boundary and outside
+the triangle so that its support tightly fits the triangle; and (iii) a single parameter can easily control
+the smoothness of the window function. Figure 3 illustrates that all three properties are satisfied for
+different values of σ; in particular, for σ → 0 our window function converges to the window function
+of the triangle. For larger values, the window function transitions smoothly from zero at the boundary
+to one in the middle, and for σ → ∞ the window function becomes a delta function at the incenter.
+Discussion: window function alternatives. Related works [8, 14] use theP
+LogSumExp function to
+approximate max in the definition of the signed distance field: ϕ(p) = log 3i=1 exp Li (p). However,
+we observed that, for small triangles, this max approximation is poor, to the point that only one of
+the three vertices has any influence on the final shape. We thus opted to use the actual max function
+which, while not smooth everywhere, accurately defines the signed distance field. Further, related
+work [8, 14, 26] also use a different definition for the window function I based on sigmoid:
+
+> 1/2 inside the triangle,
+−1
+I(p) = sigmoid(−σ ϕ(p)) such that I(p) = 1/2 at the triangle boundary,
+(2)
+
+< 1/2 outside the triangle.
+This definition fails to meet properties (i) and (ii) above, as the maximum can be less than 1, and
+the support of the window function can be significantly larger than the triangle. This is illustrated
+in Figure 3, where σ → ∞ results in a constant value everywhere in R2 .
+4
+
+Figure 4: Triangle prunning – To reduce floaters, we prune triangles seen in fewer than two views with more
+than one pixel of coverage, removing those that are overfitted by a single training view.
+
+Discussion: simpler depth-dependent scaling. In 3D Gaussian Splatting, each 3D Gaussian is
+defined in world space by a full covariance matrix, which is mapped to image space by accounting
+for the projective transformation, resulting in a 2D covariance matrix inversely proportional to depth.
+The effect is a 2D Gaussian whose size scales consistently with depth. In Convex Splatting [14], the
+2D convex hull scales automatically with depth, but not the window function smoothness parameter σ.
+Because the latter is defined in pixel units, it must be scaled “manually” to achieve a depth-consistent
+effect. In our case, this is unnecessary because of the normalization in (1): the same value of σ results
+in consistently scaled 2D window functions for all depth values.
+3.2
+
+Adaptive pruning and splitting
+
+Triangles have a compact spatial domain (and, therefore, a compact gradient); hence, we need a
+mechanism to control coverage of the spatial domain by the triangles, modulating their density
+and thus representation power at different locations. This is achieved by pruning and densification
+routines (respectively decreasing and increasing the representation power), analogously to 3DGS [21].
+Pruning. During rasterization, we calculate the maximum volume rendering blending weight T · o
+(where T is transmittance, and o is opacity) for each triangle, and prune all triangles whose maximum
+weight is less than a user-defined threshold τprune across all training views. Additionally, we prune all
+triangles that are not rendered at least twice with more than one pixel. In other words, we remove
+triangles that explain small amounts of data within a single view and are therefore likely to have
+overfitted to the training data. Figure 4 illustrates the impact of this pruning strategy.
+Densification. Instead of relying on manually tuned heuristics for adding shapes, we adopt the probabilistic framework based on MCMC introduced by Kheradmand et al. [22]. At each densification step,
+we sample from a probability distribution to guide where new shapes should be added. Kheradmand
+et al. [22] stochastically allocates new Gaussians proportionally to the opacity, and we extend this
+idea to our representation by incorporating the sharpness parameter σ. Since both opacity and σ
+are learned during training, we build the probability distribution directly from these parameters by
+alternating between using the inverse of σ and the opacity for Bernoulli sampling. In particular, we
+preferentially sample triangles with low σ values, i.e. solid triangles. Because of our window function,
+the triangle’s influence is bounded by its projected geometry, and the diffusion remains confined
+within the triangle itself. In high-density regions, many triangles overlap at each pixel, allowing each
+shape to adopt a higher σ and thus a softer contribution. In contrast, in low-density regions, where
+fewer triangles influence a pixel, each triangle must contribute more to the reconstruction. As a result,
+it adopts a lower σ to increase the contribution across its interior, ensuring maximal coverage within
+the geometric bounds and producing a more solid appearance.
+Further, taking inspiration from Kheradmand et al. [22], we design updates to avoid disrupting the
+sampling process. In particular, we require that the probability of the state (i.e. the current set of
+parameters of all triangles) remains unchanged before and after the transition, allowing it to be
+interpreted as a move between equally probable samples, preserving the integrity of the Markov
+chain. To preserve a consistent representation across sampling steps, we apply midpoint subdivision
+to the selected triangles. Each triangle is split into four smaller ones by connecting the midpoints
+of its edges, ensuring that the combined area and spatial region of the new triangles match that of
+5
+
+the original. As in our parametrization, a triangle is defined by 3D vertices, making this operation
+straightforward to perform. Finally, if a triangle is smaller than the threshold τsmall , we do not split it.
+Instead, we clone it and add random noise along the triangle’s plane orientation.
+3.3
+
+Optimization
+
+Our method starts from a set of images and their corresponding camera parameters, calibrated via
+SfM [36], which also produces a sparse point cloud. We create a 3D triangle for each 3D point in the
+sparse point cloud. We optimize the 3D vertex positions {v1 , v2 , v3 }, sharpness σ, opacity o, and
+spherical harmonic color coefficients c of all such 3D triangles by minimizing the rendering error
+from the given posed views. The initialization is done as follows. Let q ∈ R3 be a SfM 3D point and
+let d be the average Euclidean distance to its three nearest neighbors. We initialize the corresponding
+3D triangle to be approximately equilateral, randomly oriented, and with a size proportional to d. To
+do this, we sample uniformly at random three vertices {u1 , u2 , u3 } from the unit sphere, we scale
+them by d, and we add q to center them at the point q: vi = q + k · d · ui , where k ∈ R is a scaling
+constant. Our training loss combines the photometric L1 and LD-SSIM terms [21], the opacity loss
+Lo [22], and the distortion Ld and normal Ln losses [15]. Finally, we add a size regularization term
+−1
+Ls = 2 ∥(v1 − v0 ) × (v2 − v0 )∥2 , to encourage larger triangles. The final loss L is given by:
+L = (1 − λ)L1 + λLD-SSIM + β1 Lo + β2 Ld + β3 Ln + β4 Ls .
+
+(3)
+
+The full list of thresholds and hyperparameters is detailed in the Supplementary Material.
+
+4
+
+Experiments
+
+We compare our method to competitive photorealistic novel view synthesis techniques on the standard
+benchmarks Mip-NeRF360 [2] and Tanks and Temples (T&T) [23]. We consider 3DCS [14], which
+is the most closely related method, as well as to non-volumetric primitives such as BBSplat [38] and
+2DGS [15]. We also consider primitive-based volumetric methods, including 3DGS [21], 3DGSMCMC [22], and DBS [25]. Additionally, we evaluate against implicit neural rendering methods such
+as Instant-NGP [32], Mip-NeRF360 [2], and the state-of-the-art in novel view synthesis Zip-NeRF [3].
+We evaluate the visual quality of the synthesized images using standard metrics from the novel view
+synthesis literature: SSIM, PSNR, and LPIPS. We also report the average training time, rendering
+speed, and memory usage. FPS and training time were obtained using an NVIDIA A100.
+Implementation details. We set the spherical harmonics degree to 3, resulting in 59 parameters per
+triangle, matching the number of parameters for a single 3D Gaussian primitive in 3DGS [21]. We
+use different hyperparameter settings for indoor and outdoor scenes; see our Supplementary Material.
+4.1
+
+Novel-view synthesis
+
+Table 1 presents the quantitative results on the T&T dataset, as well as on the indoor and outdoor
+scenes from the Mip-NeRF360 dataset. In comparison with planar primitive methods, Triangle
+Splatting achieves a higher visual quality, with a significant improvement in LPIPS (the metric
+that best correlates with human visual perception). Specifically, Triangle Splatting improves over
+2DGS and BBSplat by 25% and 19% on Mip-NeRF360, respectively. Triangle Splatting achieves
+consistently better LPIPS scores in outdoor scenes, surpassing both 2DGS and BBSplat. Similarly,
+on the T&T dataset, Triangle Splatting yields a substantial improvement over 2DGS and BBSplat.
+While our method yields slightly lower PSNR values, this metric does not fully capture visual quality
+due to its inherent limitations (PSNR generally rewards overly smooth reconstructions that regress to
+the mean). As a result, smooth representations, such as Gaussian-based primitives, tend to perform
+better under PSNR, whereas sharper transitions from solid shapes may be penalized. Figure 5
+illustrates this limitation of PSNR: although our reconstruction looks visually superior to that of
+2DGS, the PSNR in the highlighted region is 3 PSNR higher for 2DGS.
+Against volumetric primitive methods, Triangle Splatting achieves high visual quality, with a significant improvement in LPIPS. Specifically, Triangle Splatting improves over 3DGS and 3DCS by 10%
+and 7% respectively on Mip-NeRF 360. Compared to implicit methods, Triangle Splatting matches
+the visual quality of the state-of-the-art Zip-NeRF, with only a 0.002 difference in LPIPS, while
+delivering over 500× faster rendering performance.
+6
+
+Outdoor Mip-NeRF 360
+LPIPS ↓ PSNR ↑ SSIM ↑
+
+Indoor Mip-NeRF 360
+LPIPS ↓ PSNR ↑ SSIM ↑
+
+Aver. Mip-NeRF 360
+LPIPS ↓
+FPS ↑
+
+LPIPS ↓
+
+Tanks & Temples
+PSNR ↑ SSIM ↑
+
+FPS ↑
+
+Implicit Methods
+Instant-NGP [32]
+Mip-NeRF360 [2]
+Zip-NeRF [3]
+
+0.283
+0.207
+
+24.47
+25.58
+
+0.691
+0.750
+
+0.179
+0.167
+
+31.72
+32.25
+
+3DGS [21]
+3DGS-MCMC [22] ‡
+DBS [25] †
+3DCS [14]
+
+0.234
+0.210
+0.246
+0.238
+
+24.64
+25.51
+25.10
+24.07
+
+0.731
+0.76
+0.751
+0.700
+
+0.189
+0.208
+0.22
+0.166
+
+30.41
+31.08
+32.29
+31.33
+
+BBSplat [38] †
+2DGS [15]
+Triangle Splatting
+
+0.281
+0.246
+0.217
+
+23.55
+24.34
+24.27
+
+0.669
+0.717
+0.722
+
+0.178
+0.195
+0.160
+
+30.62
+30.40
+30.80
+
+0.917
+0.926
+
+0.331
+0.237
+0.189
+
+9.43
+0.06
+0.18
+
+0.305
+0.257
+-
+
+21.92
+22.22
+-
+
+0.745
+0.759
+-
+
+14.4
+0.14
+-
+
+134
+82
+123
+25
+
+0.183
+0.19
+0.140
+0.156
+
+23.14
+24.29
+24.85
+23.94
+
+0.841
+0.86
+0.870
+0.851
+
+154
+129
+150
+33
+
+25
+64
+97
+
+0.172
+0.212
+0.143
+
+25.12
+23.13
+23.14
+
+0.868
+0.831
+0.857
+
+66
+122
+165
+
+Volumetric Primitives
+0.920
+0.917
+0.936
+0.927
+
+0.214
+0.210
+0.234
+0.207
+
+Non-Volumetric Primitives
+0.921
+0.916
+0.928
+
+0.236
+0.252
+0.191
+
+Table 1: Quantitative results (Mip-NeRF 360 [2] and Tank & Temples [23]) – We evaluate our method on
+both indoor and outdoor scenes, achieving state-of-the-art performance on the indoor benchmark. Across all
+datasets, our approach consistently outperforms other non-volumetric primitives. Bold scores indicate the best
+results among non-volumetric methods. † denotes reproduced results, while ‡ marks results reported in [25].
+
+Triangles are particularly effective in indoor or structured outdoor scenes, such as those with walls,
+cars, and other well-defined surfaces, where they can closely approximate geometry. This makes
+Triangle Splatting especially well-suited for indoor scenes, where it achieves state-of-the-art performance and outperforms 3DCS and Zip-NeRF. In contrast, unstructured outdoor scenes pose greater
+challenges for planar primitives due to sparse or ambiguous geometry, making it harder to maintain
+visual consistency across views. Despite these challenges, Triangle Splatting substantially narrows
+the performance gap and surpasses 3DGS and 3DCS on the T&T dataset, achieving a lower LPIPS.
+Figure 6 presents a qualitative comparison between Triangle Splatting, 3DCS, and 2DGS. We
+consistently produce sharper reconstructions, particularly in high-frequency regions. For instance, in
+the Bicycle scene, it more accurately captures fine details, as highlighted.
+Speed & Memory. Table 2 compares the memory conTrain ↓ FPS ↑ Memory ↓
+sumption and rendering speed of concurrent methods.
+5h
+0.18
+569MB
+Although BBSplat uses fewer primitives than Trian- ZipNerf
+3DGS
+42m
+134
+734MB
+gle Splatting, it suffers from considerably slower train- 3DCS
+87m
+25
+666MB
+ing and slower inference. Triangle Splatting demonstrates
+BBSplat
+96m
+25
+175MB
+strong scalability, despite using more primitives, it renders
+29m
+64
+484MB
+4× faster than BBSplat and achieves a 40% speedup over 2DGS
+Ours
+39m
+97
+795MB
+2DGS. Triangle Splatting significantly outperforms 3DCS,
+achieving 2× faster training and 4× faster inference. Un- Table 2: Speed & Memory – Trianlike 3DCS, Triangle Splatting does not require computing gle Splatting scales efficiently, achieving
+a 2D convex hull and rendering is more efficient. Trian- faster training and rendering despite usgle Splatting computes the signed distance for only three ing more primitives.
+lines per pixel, whereas 3DCS requires calculations for six
+lines, effectively doubling the per-pixel computational cost.
+
+Ground Truth
+
+Triangle Splatting (ours)
+
+2DGS
+
+Figure 5: Limitations of PSNR – Due to its inherent smoothness, the Gaussian primitive tends to perform
+better on the PSNR metric, which evaluates pixel-wise differences, despite being blurrier. In the highlighted
+region, our method (TS) achieves a PSNR of 18.41, compared to 21.27 for 2DGS.
+
+7
+
+Triangle Splatting (ours)
+
+2DGS
+
+3DCS
+
+Bicycle
+
+Flowers
+
+Ground Truth
+
+Figure 6: Qualitative results – We visually compare our method to 3DCS [14] and 2DGS [15]. Triangle
+Splatting captures finer details and produces more accurate renderings of real-world scenes, with less blurry
+results than 2DGS, and a higher visual quality than 3DCS [14].
+
+5
+
+Ablations
+
+Loss terms. Table 3 shows the impact on perLPIPS ↓ PSNR ↑ SSIM ↑
+formance when removing different components
+0.191
+27.14
+0.814
+of our pipeline on Mip-NeRF360. The opacity Triangle Splatting
+0.191
+26.97
+0.812
+regularization term Lo is the most impactful, en- w/o Ls
+0.193
+27.03
+0.811
+couraging lower opacity values so that triangles w/o σ −1 sampling
+0.193
+27.02
+0.811
+in empty regions become transparent and are w/o o sampling
+0.194
+27.11
+0.811
+eventually reallocated. The regularization term w/o Ld & Ln
+w/o
+L
+0.207
+26.38
+0.794
+o
+Ls encourages larger triangles, significantly increasing PSNR, particularly in indoor scenes. Table 3: Ablation study – We isolate the impact
+The initial point cloud is often extremely sparse of each component by removing them individually.
+along walls, frequently with few or no initial
+triangles. Without Ls , triangles move too slowly and fail to reach and cover the scene boundaries. By
+promoting larger shapes, this regularization enables faster growth, allowing triangles to extend into
+underrepresented regions and better capture the full structure of the scene. Sampling based on either
+σ −1 or opacity alone yields similar performance, while combining both leads to improved results,
+especially in outdoor scenes.
+Window functions. Figure 7 highlights the difference between the sigmoid-based window function
+and the proposed window function. In regions with sparse initial point cloud, particularly in the
+background, the sigmoid function fails to recover the scene structure. Since the sigmoid is not
+bounded by its geometry’s vertices and can grow arbitrarily large, the optimizer tends to increase the
+sigma values instead of moving vertices to cover empty areas. This results in small yet very smooth
+shapes, making them difficult to optimize. In contrast, our normalized window function enforces
+spatial bounds, which encourages vertices to move and fill underrepresented regions. As the size of
+each shape is explicitly defined, the optimization process becomes more stable and effective.
+Triangle vs. convex splatting. In 3DCS, each convex shape is defined by six 3D vertices. When
+the number of vertices is reduced to three, the shape degenerates into a triangle. In Figure 8,
+we present a visual comparison between Triangle Splatting and 3DCS using triangular shapes.
+Unlike 3DCS, Triangle Splatting does not produce line artifacts, which often appear in 3DCS when
+handling degenerate triangles. Furthermore, Triangle Splatting obtains a higher visual quality with an
+improvement of 0.05 LPIPS, 0.61 PSNR and 0.045 SSIM on Mip-NeRF360.
+Rendering speed with traditional
+Hardware
+OS
+TFLOPS
+HD
+Full HD
+4k
+mesh-based renderer. By annealing
+MacBook M4
+MacOS
+8
+500
+370
+160
+both opacity and σ during training
+RTX5000
+Windows
+11
+570
+380
+290
+RTX4090
+Linux
+48
+2,400
+1900
+1050
+and setting SH to 0, the representation
+gradually converges to solid triangles
+Table 4: FPS for different hardwares and resolutions – Evaluby the end of optimization. The final ated on Garden (≈ 2M triangles). OS stands for operating system.
+triangle soup can be seamlessly integrated into any mesh-based renderer. This represents a significant advancement over 3DGS: while
+preserving the benefits of differentiable training, our triangle-based representation is natively com8
+
+Figure 7: Ablation study (window function) – We compare against the Sigmoid function (left) which fails to
+recover background regions accurately, while ours doesn’t (right).
+
+Figure 8: Ablation study (triangles as convexes) – We compare our method (left) against 3DCS with convexes
+made of three vertices (right), which results in degenerate geometry, as emphasized in the zoom-ins.
+
+patible with game engines. As shown in Table 4, our method achieves 500 FPS at HD resolution
+on a consumer laptop and 2,400 FPS on an RTX 4090 within a game engine, demonstrating both
+efficiency and practical usability. Future work could explore training strategies specifically optimized
+for game engine deployment, as our current setup focuses on novel-view synthesis without targeting
+game engine visual quality. This opens new possibilities for integrating radiance field directly into
+AR/VR and gaming pipelines.
+
+6
+
+Conclusions
+
+We have introduced Triangle Splatting, a novel differentiable rendering technique that directly
+optimizes unstructured triangle primitives for novel-view synthesis. By leveraging the same primitive
+used in classical mesh representations, our method bridges the gap between neural rendering and
+traditional graphics pipelines. Triangle Splatting offers a compelling alternative to volumetric and
+implicit methods, achieving high visual fidelity with faster rendering performance. These results
+establish Triangle Splatting as a promising step toward mesh-aware neural rendering, unifying
+decades of GPU-accelerated graphics with modern differentiable frameworks.
+Limitations. Our triangle soups can already be rendered directly in any standard mesh-based renderer.
+However, generating a connected mesh still requires additional steps. A promising direction for
+future work is to develop meshing strategies that fully leverage the triangle-based nature of our
+representation. For completeness, we applied the 2D Gaussian Splatting meshing approach and
+include the results in the supplementary material. While this demonstrates compatibility with prior
+work, we believe future work should focus on more direct and principled meshing techniques that
+capitalize on the explicit triangle structure of our representation. While the results on outdoor
+scenes are promising, our method occasionally suffers from floaters. In large-scale outdoor scenes,
+volumetric shapes receive stronger training supervision during optimization, as they are visible from
+a greater number of viewpoints. In contrast, non-volumetric shapes are observed from fewer angles
+and can become overfitted to specific training views, leading to the emergence of floaters.
+9
+
+Acknowledgments. J. Held, A. Deliege and A. Cioppa are funded by the F.R.S.-FNRS. The research
+reported in this publication was supported by funding from KAUST Center of Excellence on GenAI,
+under award number 5940. This work was also supported by KAUST Ibn Rushd Postdoc Fellowship
+program. The present research benefited from computational resources made available on Lucia, the
+Tier-1 supercomputer of the Walloon Region, infrastructure funded by the Walloon Region under the
+grant agreement n°1910247.
+
+10
+
+References
+[1] Jonathan T. Barron, Ben Mildenhall, Matthew Tancik, Peter Hedman, Ricardo Martin-Brualla,
+and Pratul P. Srinivasan. Mip-NeRF: A multiscale representation for anti-aliasing neural radiance
+fields. In IEEE/CVF Int. Conf. Comput. Vis. (ICCV), pages 5835–5844, Montréal, Can., Oct.
+2021. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/10.1109/ICCV48922.
+2021.00580. 3
+[2] Jonathan T. Barron, Ben Mildenhall, Dor Verbin, Pratul P. Srinivasan, and Peter Hedman.
+Mip-NeRF 360: Unbounded anti-aliased neural radiance fields. In IEEE/CVF Conf. Comput.
+Vis. Pattern Recognit. (CVPR), pages 5460–5469, New Orleans, LA, USA, Jun. 2022. Inst.
+Electr. Electron. Eng. (IEEE). URL https://doi.org/10.1109/CVPR52688.2022.00539.
+3, 6, 7
+[3] Jonathan T. Barron, Ben Mildenhall, Dor Verbin, Pratul P. Srinivasan, and Peter Hedman.
+Zip-NeRF: Anti-aliased grid-based neural radiance fields. In IEEE/CVF Int. Conf. Comput. Vis.
+(ICCV), pages 19640–19648, Paris, Fr., Oct. 2023. Inst. Electr. Electron. Eng. (IEEE). URL
+https://doi.org/10.1109/ICCV51070.2023.01804. 3, 6, 7
+[4] Eric R. Chan, Connor Z. Lin, Matthew A. Chan, Koki Nagano, Boxiao Pan, Shalini de Mello,
+Orazio Gallo, Leonidas Guibas, Jonathan Tremblay, Sameh Khamis, Tero Karras, and Gordon
+Wetzstein. Efficient geometry-aware 3D generative adversarial networks. In IEEE/CVF Conf.
+Comput. Vis. Pattern Recognit. (CVPR), pages 16102–16112, New Orleans, LA, USA, Jun.
+2022. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/10.1109/CVPR52688.
+2022.01565. 3
+[5] Anpei Chen, Zexiang Xu, Andreas Geiger, Jingyi Yu, and Hao Su. TensoRF: Tensorial radiance
+fields. In Eur. Conf. Comput. Vis. (ECCV), volume 13692 of Lect. Notes Comput. Sci., pages
+333–350, Tel Aviv, Israël, 2022. Springer Nat. Switz. URL https://doi.org/10.1007/
+978-3-031-19824-3_20. 3
+[6] Haodong Chen, Runnan Chen, Qiang Qu, Zhaoqing Wang, Tongliang Liu, Xiaoming Chen,
+and Yuk Ying Chung. Beyond Gaussians: Fast and high-fidelity 3D splatting with linear
+kernels. arXiv, abs/2411.12440:1–14, 2024. URL https://doi.org/10.48550/arXiv.
+2411.12440. 3
+[7] Zhiqin Chen, Thomas Funkhouser, Peter Hedman, and Andrea Tagliasacchi. MobileNeRF:
+Exploiting the polygon rasterization pipeline for efficient neural field rendering on mobile
+architectures. In IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR), pages 16569–16578,
+Vancouver, Can., Jun. 2023. IEEE. URL https://doi.org/10.1109/CVPR52729.2023.
+01590. 3
+[8] Boyang Deng, Kyle Genova, Soroosh Yazdani, Sofien Bouaziz, Geoffrey Hinton, and Andrea
+Tagliasacchi. CvxNet: Learnable convex decomposition. In IEEE/CVF Conf. Comput. Vis.
+Pattern Recognit. (CVPR), pages 31–41, Seattle, WA, USA, Jun. 2020. Inst. Electr. Electron.
+Eng. (IEEE). URL https://doi.org/10.1109/CVPR42600.2020.00011. 2, 4
+[9] Yilun Du, Cameron Smith, Ayush Tewari, and Vincent Sitzmann. Learning to render novel
+views from wide-baseline stereo pairs. In IEEE/CVF Conf. Comput. Vis. Pattern Recognit.
+(CVPR), pages 4970–4980, Vancouver, Can., Jun. 2023. Inst. Electr. Electron. Eng. (IEEE).
+URL https://doi.org/10.1109/CVPR52729.2023.00481. 3
+[10] Sara Fridovich-Keil, Alex Yu, Matthew Tancik, Qinhong Chen, Benjamin Recht, and Angjoo
+Kanazawa. Plenoxels: Radiance fields without neural networks. In IEEE/CVF Conf. Comput.
+Vis. Pattern Recognit. (CVPR), pages 5491–5500, New Orleans, LA, USA, Jun. 2022. Inst.
+Electr. Electron. Eng. (IEEE). URL https://doi.org/10.1109/CVPR52688.2022.00542.
+2, 3
+[11] Markus Gross and Hanspeter Pfister.
+Point-Based Graphics.
+Morgan Kauffmann
+Publ. Inc., San Francisco, CA, USA, Jun. 2007. URL http://dx.doi.org/10.1016/
+B978-0-12-370604-1.X5000-7. 3
+11
+
+[12] Antoine Guédon and Vincent Lepetit. SuGaR: Surface-aligned Gaussian splatting for efficient
+3D mesh reconstruction and high-quality mesh rendering. In IEEE/CVF Conf. Comput. Vis.
+Pattern Recognit. (CVPR), pages 5354–5363, Seattle, WA, USA, Jun. 2024. Inst. Electr. Electron.
+Eng. (IEEE). URL https://doi.org/10.1109/CVPR52733.2024.00512. 16
+[13] Peter Hedman, Pratul P. Srinivasan, Ben Mildenhall, Jonathan T. Barron, and Paul Debevec.
+Baking neural radiance fields for real-time view synthesis. In IEEE/CVF Int. Conf. Comput. Vis.
+(ICCV), pages 5855–5864, Montréal, Can., Oct. 2021. Inst. Electr. Electron. Eng. (IEEE). URL
+https://doi.org/10.1109/ICCV48922.2021.00582. 3
+[14] Jan Held, Renaud Vandeghen, Abdullah Hamdi, Adrien Deliège, Anthony Cioppa, Silvio
+Giancola, Andrea Vedaldi, Bernard Ghanem, and Marc Van Droogenbroeck. 3D convex
+splatting: Radiance field rendering with 3D smooth convexes. In IEEE/CVF Conf. Comput. Vis.
+Pattern Recognit. (CVPR), pages 1–10, Nashville, TN, USA, Jun. 2025. Inst. Electr. Electron.
+Eng. (IEEE). 2, 3, 4, 5, 6, 7, 8, 17
+[15] Binbin Huang, Zehao Yu, Anpei Chen, Andreas Geiger, and Shenghua Gao. 2D Gaussian
+splatting for geometrically accurate radiance fields. In ACM SIGGRAPH Conf. Pap., volume 35,
+pages 1–11, Denver, CO, USA, Jul. 2024. ACM. URL https://doi.org/10.1145/3641519.
+3657428. 2, 3, 6, 7, 8, 16, 17, 18
+[16] Yi-Hua Huang, Ming-Xian Lin, Yang-Tian Sun, Ziyi Yang, Xiaoyang Lyu, Yan-Pei Cao,
+and Xiaojuan Qi. Deformable radial kernel splatting. arXiv, abs/2412.11752, 2024. URL
+https://doi.org/10.48550/arXiv.2412.11752. 3
+[17] Ajay Jain, Matthew Tancik, and Pieter Abbeel. Putting NeRF on a diet: Semantically consistent
+few-shot view synthesis. In IEEE/CVF Int. Conf. Comput. Vis. (ICCV), pages 5865–5874,
+Montréal, Can., Oct. 2021. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/10.
+1109/ICCV48922.2021.00583. 3
+[18] Rasmus Jensen, Anders Dahl, George Vogiatzis, Engil Tola, and Henrik Aanaes. Large scale
+multi-view stereopsis evaluation. In IEEE Conf. Comput. Vis. Pattern Recognit. (CVPR),
+pages 406–413, Columbus, OH, USA, Jun. 2014. Inst. Electr. Electron. Eng. (IEEE). URL
+https://doi.org/10.1109/CVPR.2014.59. 16
+[19] Hiroharu Kato, Yoshitaka Ushiku, and Tatsuya Harada. Neural 3D mesh renderer. In IEEE/CVF
+Conf. Comput. Vis. Pattern Recognit. (CVPR), pages 3907–3916, Salt Lake City, UT, USA, Jun.
+2018. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/10.1109/CVPR.2018.
+00411. 2, 3
+[20] Michael Kazhdan, Matthew Bolitho, and Hugues Hoppe. Poisson surface reconstruction. In
+Symp. Geom. Process., pages 61–70, Cagliari, Italy, Jun. 2006. Eurographics Assoc. URL
+http://diglib.eg.org/handle/10.2312/SGP.SGP06.061-070. 2
+[21] Bernhard Kerbl, Georgios Kopanas, Thomas Leimkuehler, and George Drettakis. 3D Gaussian
+splatting for real-time radiance field rendering. ACM Trans. Graph., 42(4):1–14, Jul. 2023.
+URL https://doi.org/10.1145/3592433. 2, 3, 5, 6, 7, 16, 17
+[22] Shakiba Kheradmand, Daniel Rebain, Gopal Sharma, Weiwei Sun, Jeff Tseng, Hossam Isack,
+Abhishek Kar, Andrea Tagliasacchi, and Kwang Moo Yi. 3D Gaussian splatting as Markov chain
+Monte Carlo. In Adv. Neural Inf. Process. Syst. (NeurIPS), volume 37, pages 80965–80986,
+Vancouver, Can., Dec. 2024. Curran Assoc. Inc. URL https://neurips.cc/virtual/
+2024/poster/94984. 5, 6, 7
+[23] Arno Knapitsch, Jaesik Park, Qian-Yi Zhou, and Vladlen Koltun. Tanks and temples: benchmarking large-scale scene reconstruction. ACM Trans. Graph., 36(4):1–13, Jul. 2017. URL
+https://doi.org/10.1145/3072959.3073599. 6, 7
+[24] Jonas Kulhanek and Torsten Sattler. Tetra-NeRF: Representing neural radiance fields using
+tetrahedra. In IEEE/CVF Int. Conf. Comput. Vis. (ICCV), pages 18412–18423, Paris, Fr., Oct.
+2023. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/10.1109/ICCV51070.
+2023.01692. 3
+12
+
+[25] Rong Liu, Dylan Sun, Meida Chen, Yue Wang, and Andrew Feng. Deformable beta splatting.
+arXiv, abs/2501.18630, 2025. URL https://doi.org/10.48550/arXiv.2501.18630. 6,
+7
+[26] Shichen Liu, Weikai Chen, Tianye Li, and Hao Li. Soft rasterizer: A differentiable renderer for
+image-based 3D reasoning. In IEEE/CVF Int. Conf. Comput. Vis. (ICCV), pages 7707–7716,
+Seoul, South Korea, Oct. 2019. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/
+10.1109/ICCV.2019.00780. 2, 3, 4
+[27] Matthew M. Loper and Michael J. Black. OpenDR: An approximate differentiable renderer.
+In Eur. Conf. Comput. Vis. (ECCV), volume 8695 of Lect. Notes Comput. Sci., pages 154–
+169, Zürich, Switzerland, 2014. Springer Int. Publ. URL https://doi.org/10.1007/
+978-3-319-10584-0_11. 3
+[28] Jonathon Luiten, Georgios Kopanas, Bastian Leibe, and Deva Ramanan. Dynamic 3D Gaussians:
+Tracking by persistent dynamic view synthesis. In Int. Conf. 3D Vis. (3DV), pages 800–809,
+Davos, Switzerland, Mar. 2024. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/
+10.1109/3DV62453.2024.00044. 3
+[29] Alexander Mai, Peter Hedman, George Kopanas, Dor Verbin, David Futschik, Qiangeng Xu,
+Falko Kuester, Jonathan T. Barron, and Yinda Zhang. EVER: Exact volumetric ellipsoid
+rendering for real-time view synthesis. arXiv, abs/2410.01804, 2024. URL https://doi.
+org/10.48550/arXiv.2410.01804. 3
+[30] Ben Mildenhall, Pratul P. Srinivasan, Matthew Tancik, Jonathan T. Barron, Ravi Ramamoorthi, and Ren Ng. NeRF: Representing scenes as neural radiance fields for view synthesis. In Eur. Conf. Comput. Vis. (ECCV), volume 12346 of Lect. Notes Comput. Sci., pages
+405–421, Virtual conference, 2020. Springer Int. Publ. URL https://doi.org/10.1007/
+978-3-030-58452-8_24. 3
+[31] Ben Mildenhall, Pratul P. Srinivasan, Matthew Tancik, Jonathan T. Barron, Ravi Ramamoorthi,
+and Ren Ng. NeRF. Commun. ACM, 65(1):99–106, Dec. 2021. URL https://doi.org/10.
+1145/3503250. 2
+[32] Thomas Müller, Alex Evans, Christoph Schied, and Alexander Keller. Instant neural graphics
+primitives with a multiresolution hash encoding. ACM Trans. Graph., 41(4):1–15, Jul. 2022.
+URL https://doi.org/10.1145/3528223.3530127. 2, 3, 6, 7
+[33] Lukas Radl, Michael Steiner, Mathias Parger, Alexander Weinrauch, Bernhard Kerbl, and
+Markus Steinberger. StopThePop: Sorted Gaussian splatting for view-consistent real-time
+rendering. ACM Trans. Graph., 43(4):1–17, Jul. 2024. URL https://doi.org/10.1145/
+3658187. 15
+[34] Christian Reiser, Songyou Peng, Yiyi Liao, and Andreas Geiger. KiloNeRF: Speeding up neural
+radiance fields with thousands of tiny MLPs. In IEEE/CVF Int. Conf. Comput. Vis. (ICCV),
+pages 14315–14325, Montréal, Can., Oct. 2021. Inst. Electr. Electron. Eng. (IEEE). URL
+https://doi.org/10.1109/ICCV48922.2021.01407. 3
+[35] Christian Reiser, Rick Szeliski, Dor Verbin, Pratul Srinivasan, Ben Mildenhall, Andreas Geiger,
+Jon Barron, and Peter Hedman. MERF: Memory-efficient radiance fields for real-time view
+synthesis in unbounded scenes. ACM Trans. Graph., 42(4):1–12, Jul. 2023. URL https:
+//doi.org/10.1145/3592426. 3
+[36] Johannes L. Schonberger and Jan-Michael Frahm. Structure-from-motion revisited. In IEEE
+Conf. Comput. Vis. Pattern Recognit. (CVPR), pages 4104–4113, Las Vegas, NV, USA, Jun. 2016.
+Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/10.1109/CVPR.2016.445. 6
+[37] Cheng Sun, Min Sun, and Hwann-Tzong Chen. Direct voxel grid optimization: Super-fast
+convergence for radiance fields reconstruction. In IEEE/CVF Conf. Comput. Vis. Pattern
+Recognit. (CVPR), pages 5449–5459, New Orleans, LA, USA, Jun. 2022. Inst. Electr. Electron.
+Eng. (IEEE). URL https://doi.org/10.1109/CVPR52688.2022.00538. 3
+13
+
+[38] David Svitov, Pietro Morerio, Lourdes Agapito, and Alessio Del Bue. BillBoard splatting
+(BBSplat): Learnable textured primitives for novel view synthesis. arXiv, abs/2411.08508,
+2024. URL https://doi.org/10.48550/arXiv.2411.08508. 6, 7, 16
+[39] Andrea Tagliasacchi and Ben Mildenhall. Volume rendering digest (for NeRF). arXiv,
+abs/2209.02417, 2022. URL https://doi.org/10.48550/arXiv.2209.02417. 3
+[40] Nicolas von Lützow and Matthias Nießner. LinPrim: Linear primitives for differentiable
+volumetric rendering. arXiv, abs/2501.16312, 2025. URL https://doi.org/10.48550/
+arXiv.2501.16312. 3
+[41] Zehao Yu, Anpei Chen, Binbin Huang, Torsten Sattler, and Andreas Geiger. Mip-splatting:
+Alias-free 3D Gaussian splatting. In IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR),
+pages 19447–19456, Seattle, WA, USA, Jun. 2024. Inst. Electr. Electron. Eng. (IEEE). URL
+https://doi.org/10.1109/CVPR52733.2024.01839. 3
+[42] Kai Zhang, Gernot Riegler, Noah Snavely, and Vladlen Koltun. NeRF++: Analyzing and
+improving neural radiance fields. arXiv, abs/2010.07492, 2020. URL https://doi.org/10.
+48550/arXiv.2010.07492. 3
+[43] Hongyu Zhou, Jiahao Shao, Lu Xu, Dongfeng Bai, Weichao Qiu, Bingbing Liu, Yue Wang,
+Andreas Geiger, and Yiyi Liao. HUGS: Holistic urban 3D scene understanding via Gaussian
+splatting. In IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR), pages 21336–21345,
+Seattle, WA, USA, Jun. 2024. Inst. Electr. Electron. Eng. (IEEE). URL https://doi.org/
+10.1109/CVPR52733.2024.02016. 3
+
+14
+
+A
+
+Supplementary Material
+
+A.1
+
+Methodology
+
+Depth-dependant scaling. In Triangle Splatting, the influence I(p) depends only on the normalized
+ratio ϕ/ min ϕ. Since a projection is a uniform in-plane scaling, a single exponent σ suffices for all
+depths. Indeed, if we scale a triangle by a > 0, then each projected vertex vi and pixel p transforms as
+vi 7→ a vi and p 7→ a p, so the signed-distance di (p) to each edge satisfies d′i (p′ ) = a di (p), implying
+ϕ′ (p′ ) = max(d′i (p′ )) = a ϕ(p) and min ϕ′ = a min ϕ. Hence
+a ϕ(p)
+ϕ′ (p′ )
+ϕ(p)
+=
+=
+,
+′
+min ϕ
+a min ϕ
+min ϕ
+
+(4)
+
+and so I ′ (p′ ) = (ϕ′ (p′ )/ min ϕ′ )σ = (ϕ(p)/ min ϕ)σ = I(p).
+Tile assignment in Triangle Splatting Triangle Splatting is a tile-based renderer that assigns triangles to pixel tiles by computing their screen-space intersections. Unlike 3D Gaussian Splatting,
+where the shape has a soft spatial extent, Triangle Splatting is precisely bounded by the projection
+of its three vertices. A simple and efficient initial guess for determining tile coverage is to compute
+the minimum and maximum x and y coordinates of the projected vertices. While this method is
+computationally simple, it is conservative, resulting in unnecessary computations for pixels that
+are not influenced. As σ increases or opacity o decreases, the influence region may not reach the
+triangle’s vertices, causing the rasterizer to process pixels that have no contribution. To avoid this, we
+compute a more precise bounding box by determining the maximum distance d a pixel can be from
+the triangle edge while still contributing at least τcutoff influence. We define the influence function as:
+
+σ
+d
+τcutoff =
+· o.
+(5)
+L(s)
+where L(s) is the signed distance from the triangle’s edges to the incenter. Rearranging gives:
+τ
+1
+cutoff σ
+d = L(s) ·
+.
+(6)
+o
+We then subtract the distance d from the offset in each edge equation, effectively tightening the
+triangle’s boundary. The minimum and maximum of the updated edge intersections define a more
+accurate bounding box. As σ increases or o decreases, this bounding box shrinks accordingly,
+significantly reducing unnecessary rasterization.
+Depth sorting. During rasterization, the triangles are currently sorted based on their center, which
+can lead to popping and blending artifacts during view rotation. Instead, future work can implement
+per-pixel sorting of the triangles, as proposed in [33], where Radl et al. introduce a hierarchical
+tile-based rasterization approach that performs local per-pixel sorting to ensure consistent visibility
+and eliminate popping artifacts.
+Densification. We prioritize sampling triangles with low σ values, corresponding to more solid
+triangles. Our window function ensures that each triangle’s influence is strictly limited to its projected
+area, preventing any influence beyond its geometric bounds. In regions with high triangle density,
+multiple shapes contribute to each pixel, allowing individual triangles to adopt larger σ values and
+produce softer, more diffuse effects. Conversely, in sparse regions where fewer triangles are present,
+each triangle must account for more of the pixel-wise reconstruction, leading it to adopt a smaller σ
+and thus contribute more across its surface. Figure 9 visualizes the number of contributions per pixel.
+In sparse background regions, triangles adopt lower σ values, resulting in solid shapes and fewer
+overlapping contributions per pixel. In contrast, densely sampled regions exhibit higher per-pixel
+contributions due to many overlapping triangles. As we prioritize adding new triangles to low-density
+regions, we sample from a probability distribution defined over the inverse of σ.
+
+15
+
+Figure 9: Number of contributions per pixel – In background regions where the initial point cloud is
+sparse, triangles reduce their σ to increase coverage across their interior. This leads to more solid shapes and,
+consequently fewer contributions per pixel.
+
+A.2
+
+Initialization & Hyperparameters.
+
+Initialization. At initialization, each triangle is
+assigned a fixed opacity of 0.28, and a sigma
+value of 1.16. The scaling constant k of the convex hull is set to 2.2, which defines the spatial
+extent of the triangle in the 3D scene. These
+parameter values were determined empirically
+to ensure stable initialization and consistent rendering behavior across scenes.
+Densification. We perform densification every
+500 iterations, starting from iteration 500 until
+iteration 25,000. At each densification step, we
+increase the number of shapes by 30%.
+All other hyperparameters are defined in Table 5.
+A.3
+
+Method
+
+Outdoor
+
+Indoor
+
+feature_lr
+opacity_lr
+lr_convex_points_init
+lr_sigma
+lambda_normals
+lambda_opacity
+lambda_size
+max_noise_factor
+opacity_dead
+split_size
+importance_threshold
+
+0.0025
+0.014
+0.0018
+0.0008
+0.0001
+0.0055
+1e-8
+1.5
+0.014
+24.0
+0.022
+
+0.0025
+0.014
+0.0015
+0.0008
+0.00004
+0.0055
+5e-8
+1.5
+0.014
+24.0
+0.0256
+
+Table 5: Hyperparameters
+
+More novel-view synthesis results
+
+Tables 7 to 10 present a detailed analysis of the results on the Mip-NeRF360 and Tanks and Temples
+datasets, while Figure 10 presents additional qualitative results.
+A.4
+
+Geometry analysis of Triangle Splatting
+
+Our triangle soup representation is already compatible with stanMethod
+CD ↓
+dard mesh-based renderers and can be rendered directly without
+3DGS [21]
+1.96
+modification. However, constructing a connected mesh from this
+SuGaR [12]
+1.33
+representation still requires post-processing. A promising direction
+for future research is to design meshing strategies that take full advan2DGS [15]
+0.80
+tage of the explicit triangle structure inherent to our approach. For
+BBSplat [38] 0.91
+completeness, we applied the meshing method used in 2D Gaussian
+Ours
+1.06
+Splatting and present the quantitative results on the DTU dataset [18]
+in Table 6 and some quantitative results in Figure 11. While this Table 6: Chamfer distance on
+highlights compatibility with existing techniques, we advocate for the DTU dataset[18] – We refuture work to explore more principled and direct meshing methods port the Chamfer distance on 15
+tailored specifically to triangle-based representations. Figure 12 scenes from DTU dataset.
+shows the normal map produced by Triangle Splatting. The triangles are well aligned with the
+underlying geometry. For example, on the Garden table, all triangles share a consistent orientation
+and lie flat on the surface.
+
+16
+
+Method
+
+LPIPS ↓
+PSNR ↑
+SSIM ↑
+Truck Train Truck Train Truck Train
+
+3DGS [21]
+0.148 0.218 25.18 21.09 0.879 0.802
+2DGS [15]
+0.173 0.251 25.12 21.14 0.874 0.789
+3DCS [14]
+0.125 0.187 25.65 22.23 0.882 0.820
+Triangle Splatting 0.108 0.179 24.94 21.33 0.889 0.823
+Table 7: LPIPS, PSNR, and SSIM scores for the Truck and Train scenes of the T&T dataset.
+
+Bicycle Flowers Garden Stump Treehill Room Counter Kitchen Bonsai
+3DGS
+2DGS
+3DCS
+Triangle Splatting
+
+0.205 0.336 0.103 0.210 0.317 0.220 0.204
+0.218 0.346 0.115 0.222 0.329 0.223 0.208
+0.216 0.322 0.113 0.227 0.317 0.193 0.182
+0.190 0.284 0.106 0.214 0.289 0.186 0.171
+Table 8: LPIPS score for the MipNerf360 dataset.
+
+0.129
+0.133
+0.117
+0.115
+
+0.205
+0.214
+0.182
+0.169
+
+Bicycle Flowers Garden Stump Treehill Room Counter Kitchen Bonsai
+3DGS
+2DGS
+3DCS
+Triangle Splatting
+
+25.24 21.52 27.41 26.55 22.49 30.63 28.70
+24.87 21.15 26.95 26.47 22.27 31.06 28.55
+24.72 20.52 27.09 26.12 21.77 31.70 29.02
+24.9
+20.85 27.20 26.29 21.94 31.05 28.90
+Table 9: PSNR score for the MipNerf360 dataset.
+
+30.31
+30.50
+31.96
+31.32
+
+31.98
+31.52
+32.64
+31.95
+
+Bicycle Flowers Garden Stump Treehill Room Counter Kitchen Bonsai
+3DGS
+2DGS
+3DCS
+Triangle Splatting
+
+Triangle Splatting (ours)
+
+2DGS
+
+0.922
+0.919
+0.930
+0.929
+
+0.938
+0.933
+0.945
+0.947
+
+3DCS
+
+Room
+
+Kitchen
+
+Garden
+
+Ground Truth
+
+0.771 0.605 0.868 0.775 0.638 0.914 0.905
+0.752 0.588 0.852 0.765 0.627 0.912 0.900
+0.737 0.575 0.850 0.746 0.595 0.925 0.909
+0.765 0.614 0.863 0.759 0.611 0.926 0.911
+Table 10: SSIM score for the MipNerf360 dataset.
+
+Figure 10: Qualitative results – We visually compare our method to 2DGS [15] and 3DCS [14]. Triangle
+Splatting captures finer details and produces more accurate renderings of real-world scenes, with less blurry
+results than 2DGS, and a higher visual quality than 3DCS [14].
+
+17
+
+Figure 11: Mesh extraction from depth maps – We extract meshes by applying TSDF fusion to the predicted
+depth maps, as followed in 2DGS [15].
+
+Figure 12: Normal map and rendered image – The normal map reveals a smooth surface, with the triangle
+orientations consistently aligned to follow the local geometry.
+
+A.5
+
+Transformation to mesh-based renderer
+
+In the final 5,000 training iterations, we prune all triangles with opacity below a threshold τprune ,
+retaining only solid triangles. Additionally, we introduce a loss term to encourage higher opacity and
+lower σ, ensuring that the final triangles are mostly solid and opaque. After training, the triangles can
+be directly converted into any format supported by mesh-based renderers, as our parametrization is
+fully compatible with standard mesh representations, enabling a seamless transition. Figure 13 shows
+some quantitative results with a rendering speed of 3,000 FPS. The visuals are rendered without
+shaders and were not specifically trained or optimized for game engine fidelity. Nevertheless, it
+demonstrates an important first step toward the direct integration of radiance fields into interactive 3D
+environments. Future work could explore training strategies specifically tailored to maximize visual
+fidelity in mesh-based renderers, paving the way for seamless integration of reconstructed scenes into
+standard game engines for real-time applications such as AR/VR or interactive simulations.
+
+Figure 13: Byproduct of the triangle-based representation – In a game engine, we render at 3,000 FPS at
+1280×720 resolution on a RTX4090.
+
+18
+
+
