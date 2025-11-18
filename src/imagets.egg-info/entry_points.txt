@@ -1,0 +1,5 @@
+[console_scripts]
+image_ts_decode = image_ts.cli.decode_cli:main
+image_ts_encode = image_ts.cli.encode_cli:main
+image_ts_eval = image_ts.cli.eval_cli:main
+image_ts_train = image_ts.cli.train_cli:main

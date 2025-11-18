@@ -1,0 +1,28 @@
+[project]
+name = "imagets"
+version = "0.1.0"
+description = "Image-TS: triangle-based image compression"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+	"torch",
+	"numpy",
+	"pillow",
+	"matplotlib",
+]
+
+[project.optional-dependencies]
+test = [
+	"pytest",
+	"pytest-cov",
+]
+
+[project.scripts]
+image_ts_train = "image_ts.cli.train_cli:main"
+image_ts_encode = "image_ts.cli.encode_cli:main"
+image_ts_decode = "image_ts.cli.decode_cli:main"
+image_ts_eval = "image_ts.cli.eval_cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

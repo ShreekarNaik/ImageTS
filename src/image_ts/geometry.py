@@ -43,7 +43,20 @@ def _perp(vec: Tensor) -> Tensor:
 
 
 def signed_distance(points: Tensor, normals: Tensor, offsets: Tensor) -> Tensor:
-    \"\"\"Evaluate Triangle SDF for a broadcastable grid of points.\"\"\"\n+    normals_b = normals.unsqueeze(-3)\n+    offsets_b = offsets.unsqueeze(-3)\n+    points_b = points.unsqueeze(-2)\n+    dots = torch.sum(normals_b * points_b, dim=-1) + offsets_b\n+    return torch.amax(dots, dim=-1)\n*** End Patch
+    """Evaluate Triangle SDF for a broadcastable grid of points.
+
+    points: (1, P, 2) or (B, P, 2)
+    normals: (T, 3, 2)
+    offsets: (T, 3)
+
+    Returns: (T, P) signed distances using max over half-space edge equations.
+    """
+    normals_b = normals.unsqueeze(1)      # (T, 1, 3, 2)
+    offsets_b = offsets.unsqueeze(1)      # (T, 1, 3)
+    points_b = points.unsqueeze(-2)       # (1 or B, P, 1, 2) -> broadcast over T
+    dots = torch.sum(normals_b * points_b, dim=-1) + offsets_b  # (T, P, 3)
+    return torch.amax(dots, dim=-1)       # (T, P)
+
 
 
 def triangle_incenter(vertices: Tensor, eps: float = 1e-8) -> Tensor:
