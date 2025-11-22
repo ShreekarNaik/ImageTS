@@ -23,6 +23,8 @@ def ssim(pred: torch.Tensor, target: torch.Tensor) -> float:
 
 
 def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
+    if pred.device != target.device:
+        target = target.to(pred.device)
     return {
         "psnr": psnr(pred, target),
         "ssim": ssim(pred, target),

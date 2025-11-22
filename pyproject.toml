@@ -3,12 +3,17 @@ name = "imagets"
 version = "0.1.0"
 description = "Image-TS: triangle-based image compression"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.11"
 dependencies = [
-	"torch",
 	"numpy",
 	"pillow",
 	"matplotlib",
+	"torch==2.7.1",
+	"tqdm",
+	# Pin the NVIDIA CUDA runtime / cudnn packages to the cu11 family (CUDA 11.8)
+	# so dependency resolvers (uv) cannot replace them with cu12 packages.
+	"nvidia-cuda-runtime-cu11>=11.8,<12",
+	"nvidia-cudnn-cu11>=9.1,<9.5",
 ]
 
 [project.optional-dependencies]
@@ -26,3 +31,25 @@ image_ts_eval = "image_ts.cli.eval_cli:main"
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu118" },
+]
+torchvision = [
+  { index = "pytorch-cu118" },
+]
+torchaudio = [
+  { index = "pytorch-cu118" },
+]
+nvidia-cuda-runtime-cu11 = [
+  { index = "pytorch-cu118" },
+]
+nvidia-cudnn-cu11 = [
+  { index = "pytorch-cu118" },
+]

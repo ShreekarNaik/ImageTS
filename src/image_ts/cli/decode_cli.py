@@ -29,7 +29,7 @@ def main(args: argparse.Namespace | None = None) -> None:
     header, triangles = decode_triangles(blob)
     renderer_cfg = RendererConfig(tile_size=header["tile_size"], topk=args.topk)
     renderer = TileRenderer(width=header["width"], height=header["height"], config=renderer_cfg)
-    reconstruction = renderer.render(triangles)
+    reconstruction = renderer.render(triangles, show_progress=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_image(reconstruction, args.output)
     if args.save_triangles is not None:

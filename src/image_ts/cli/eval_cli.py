@@ -42,7 +42,7 @@ def main(args: argparse.Namespace | None = None) -> None:
             height=header["height"],
             config=RendererConfig(tile_size=header["tile_size"]),
         )
-        reconstruction = renderer.render(triangles)
+        reconstruction = renderer.render(triangles, show_progress=True)
         bpp = (len(blob) * 8) / (header["width"] * header["height"])
     metrics = compute_metrics(reconstruction, reference)
     if bpp is not None:

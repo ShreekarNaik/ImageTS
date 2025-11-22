@@ -15,6 +15,8 @@ def save_reconstruction_outputs(
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     save_image(reconstruction, output_dir / "reconstruction.png")
+    if reconstruction.device != reference.device:
+        reference = reference.to(reconstruction.device)
     error = torch.abs(reconstruction - reference).mean(dim=-1, keepdim=True)
     if torch.max(error) > 0:
         normalized = error / error.max()

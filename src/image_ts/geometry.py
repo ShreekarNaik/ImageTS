@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import math
 from typing import Tuple
+import warnings
 
 import torch
+
+from image_ts.utils.memory import batch_process_triangles
 
 Tensor = torch.Tensor
 
@@ -43,7 +46,60 @@ def _perp(vec: Tensor) -> Tensor:
 
 
 def signed_distance(points: Tensor, normals: Tensor, offsets: Tensor) -> Tensor:
-    """Evaluate Triangle SDF for a broadcastable grid of points.
+    """Evaluate Triangle SDF for a broadcastable grid of points with automatic batching.
+    
+    Automatically batches processing based on available GPU memory to prevent OOM errors.
+
+    Args:
+        points: (1, P, 2) or (B, P, 2) - evaluation points
+        normals: (T, 3, 2) - edge normals for triangles
+        offsets: (T, 3) - edge offsets for triangles
+
+    Returns: (T, P) signed distances using max over half-space edge equations.
+    """
+    num_triangles = normals.shape[0]
+    num_points = points.shape[1]
+    device = normals.device
+    dtype = normals.dtype
+    
+    # Check if we need batching
+    batch_size, num_batches = batch_process_triangles(
+        num_triangles, num_points, device, dtype
+    )
+    
+    # If all triangles fit in one batch, use original computation
+    if num_batches == 1:
+        return _signed_distance_unbatched(points, normals, offsets)
+    
+    # Log when batching is needed (for debugging)
+    warnings.warn(
+        f"Processing {num_triangles} triangles in {num_batches} batches "
+        f"(batch_size={batch_size}) to fit in GPU memory",
+        RuntimeWarning,
+        stacklevel=2
+    )
+    
+    # Otherwise, batch the computation
+    results = []
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, num_triangles)
+        
+        batch_normals = normals[start_idx:end_idx]
+        batch_offsets = offsets[start_idx:end_idx]
+
+        batch_result = _signed_distance_unbatched(points, batch_normals, batch_offsets)
+        results.append(batch_result)
+
+        # Drop references so Python can reclaim memory promptly.
+        del batch_result, batch_normals, batch_offsets
+    
+    # Concatenate results along triangle dimension
+    return torch.cat(results, dim=0)  # (T, P)
+
+
+def _signed_distance_unbatched(points: Tensor, normals: Tensor, offsets: Tensor) -> Tensor:
+    """Single-batch signed distance computation (original implementation).
 
     points: (1, P, 2) or (B, P, 2)
     normals: (T, 3, 2)
