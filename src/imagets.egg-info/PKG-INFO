@@ -2,13 +2,15 @@ Metadata-Version: 2.4
 Name: imagets
 Version: 0.1.0
 Summary: Image-TS: triangle-based image compression
-Requires-Python: ==3.13.5
+Requires-Python: <3.11,>=3.10
 Description-Content-Type: text/markdown
 Requires-Dist: numpy
 Requires-Dist: pillow
 Requires-Dist: matplotlib
-Requires-Dist: torch
-Requires-Dist: torchvision
+Requires-Dist: torch==2.7.1
+Requires-Dist: tqdm
+Requires-Dist: nvidia-cuda-runtime-cu11<12,>=11.8
+Requires-Dist: nvidia-cudnn-cu11<9.5,>=9.1
 Provides-Extra: test
 Requires-Dist: pytest; extra == "test"
 Requires-Dist: pytest-cov; extra == "test"

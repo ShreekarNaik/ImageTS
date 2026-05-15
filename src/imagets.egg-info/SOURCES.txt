@@ -16,11 +16,13 @@ src/image_ts/data/datasets.py
 src/image_ts/data/importance.py
 src/image_ts/encoder/densify.py
 src/image_ts/encoder/init.py
+src/image_ts/encoder/multiscale.py
 src/image_ts/encoder/prune.py
 src/image_ts/encoder/train.py
 src/image_ts/renderer/cpu_renderer.py
 src/image_ts/renderer/tile_renderer.py
 src/image_ts/utils/logging.py
+src/image_ts/utils/memory.py
 src/image_ts/utils/profiling.py
 src/image_ts/utils/seed.py
 src/image_ts/viz/images.py
@@ -34,5 +36,6 @@ src/imagets.egg-info/top_level.txt
 tests/test_codec.py
 tests/test_geometry.py
 tests/test_integration.py
+tests/test_memory_batching.py
 tests/test_renderer.py
 tests/test_window.py
