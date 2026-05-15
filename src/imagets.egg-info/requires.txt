@@ -1,10 +1,8 @@
 numpy
 pillow
 matplotlib
-torch==2.7.1
-tqdm
-nvidia-cuda-runtime-cu11<12,>=11.8
-nvidia-cudnn-cu11<9.5,>=9.1
+torch
+torchvision
 
 [test]
 pytest
