@@ -2,13 +2,6 @@
 
 Image-TS is a research-oriented implementation of triangle-based image compression using differentiable rendering, progressive training, and codec-aware triangle optimization.
 
-## Project Snapshot
-
-**cs663_image_ts**  
-**Title:** Image Compression via Differentiable Triangle Splatting  
-**Date:** (Dec '25)  
-**Subtitle:** _Achieved high-fidelity image compression using progressive, differentiable triangle-based rendering_
-
 Key outcomes:
 - Built a tile-based differentiable renderer with top-K selection achieving **5x faster training** and **3x lower memory**.
 - Used age-based progressive training with multi-level pyramids enabling dynamic triangle growth and a **5x speedup**.
